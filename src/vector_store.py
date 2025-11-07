@@ -157,7 +157,6 @@ async def search_servers(query: str, n_results: int = 10) -> List[dict]:
                 server["similarity"] = 1 - distance
             
             servers.append(server)
-    
     return servers
 
 

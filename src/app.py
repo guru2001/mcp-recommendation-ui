@@ -1,7 +1,7 @@
 from typing import Any
 import chainlit as cl
 from agents import Agent, Runner
-from vector_store import search_servers
+from vector_store import search_servers, store_servers, get_all_servers
 from agents.mcp import MCPServerStreamableHttp, MCPServerStdio
 import asyncio
 from datetime import datetime, timedelta
@@ -14,6 +14,21 @@ mcp_registry = {}
 _mcp_servers_cache = None
 _cache_timestamp = None
 _cache_ttl = timedelta(hours=24)  # Cache for 24 hours
+
+# --- Initialize vector database on startup ---
+@cl.on_chat_start
+async def on_chat_start():
+    """Initialize vector database with local servers if empty."""
+    try:
+        # Check if vector DB has any servers
+        existing_servers = get_all_servers()
+        if not existing_servers:
+            # Populate with local servers
+            local_servers = get_local_mcp_servers()
+            await store_servers(local_servers)
+            print(f"✅ Populated vector database with {len(local_servers)} servers")
+    except Exception as e:
+        print(f"⚠️ Warning: Could not initialize vector database: {e}")
 
 async def get_mcp_servers(use_cache: bool = True) -> list[dict]:
     """
@@ -44,97 +59,42 @@ async def get_mcp_servers(use_cache: bool = True) -> list[dict]:
 
 # --- Intelligent recommender using agent ---
 async def recommend_servers_intelligent(user_query: str) -> list[dict]:
-    """Use an agent to intelligently recommend MCP servers based on user query.
-    
-    Optimized for large server lists by:
-    1. Using semantic search to narrow down to top candidates first
-    2. Only sending a small subset to the LLM for final ranking
-    """
-    # Step 1: Use semantic search to get top candidates (much faster than sending all to LLM)
-    candidate_servers = []
+    """Recommend MCP servers based on user query using semantic search and LLM ranking."""
+    # Get candidates via semantic search, fallback to all servers if search fails
     try:
-        # Get top 20-30 most relevant servers via semantic search
-        candidate_servers = await search_servers(user_query, n_results=25)
+        candidate_servers = await search_servers(user_query, n_results=15)
     except Exception:
-        # Vector search not available, fall back to getting all servers
-        pass
+        candidate_servers = await get_mcp_servers(use_cache=True)
     
-    # Step 2: If semantic search didn't return enough results, get all servers and filter
-    if len(candidate_servers) < 5:
-        all_servers = await get_mcp_servers(use_cache=True)
-        # Fallback: use keyword matching to get candidates
-        query_lower = user_query.lower()
-        query_words = query_lower.split()
-        
-        # Score servers by keyword matches
-        scored_servers = []
-        for server in all_servers:
-            name_lower = server.get("name", "").lower()
-            desc_lower = server.get("description", "").lower()
-            score = 0
-            for word in query_words:
-                if word in name_lower:
-                    score += 3  # Name matches are more important
-                if word in desc_lower:
-                    score += 1
-            if score > 0:
-                scored_servers.append((score, server))
-        
-        # Sort by score and take top candidates
-        scored_servers.sort(reverse=True, key=lambda x: x[0])
-        candidate_servers = [s[1] for s in scored_servers[:25]]
-    
-    # If we still don't have candidates, return empty
     if not candidate_servers:
         return []
     
-    # Step 3: Send only the top candidates to LLM for final ranking (much more efficient)
-    server_list = "\n".join([
-        f"- {s['name']}: {s['description']}" 
-        for s in candidate_servers
-    ])
-    
-    prompt = f"""Analyze the following user query and recommend the most relevant MCP servers from the candidates below.
+    # Use LLM to rank and select top 3
+    server_list = "\n".join([f"- {s['name']}: {s['description']}" for s in candidate_servers])
+    prompt = f"""User query: "{user_query}"
 
-    Candidate MCP servers (pre-filtered for relevance):
-    {server_list}
+Available MCP servers:
+{server_list}
 
-    User query: "{user_query}"
-
-    Based on the user's query, which MCP servers would be most helpful? 
-    Return ONLY a comma-separated list of server names (e.g., "fetch, filesystem").
-    If no servers are relevant, return "none".
-    Do not include explanations, just the server names."""
-    
-    # Use a lightweight agent for recommendations
-    recommender_agent = Agent[Any](
-        name="mcp_recommender",
-        model="gpt-4o-mini"
-    )
+    Return ONLY the most relevant server name(s). Be very selective - only include servers that directly address the user's specific need.
+    Return a comma-separated list (e.g., "filesystem" or "time,github" if multiple are truly needed).
+    If only one server is relevant, return only that one.
+    If none are relevant, return "none"."""
     
     try:
+        recommender_agent = Agent[Any](name="mcp_recommender", model="gpt-4o-mini")
         result = await Runner.run(recommender_agent, prompt)
         recommendation_text = getattr(result, "final_output", None) or getattr(result, "output_text", str(result))
         
-        # Parse the recommendation
-        if "none" in recommendation_text.lower() or not recommendation_text.strip():
-            # Return top candidates by similarity if LLM says none
+        if "none" in recommendation_text.lower():
             return candidate_servers[:3]
         
-        # Extract server names
-        recommended_names = [name.strip().lower() for name in recommendation_text.split(",")]
-        recommended_servers = [
-            s for s in candidate_servers 
-            if s["name"].lower() in recommended_names
-        ]
+        # Match recommended names to servers
+        recommended_names = {name.strip().lower() for name in recommendation_text.split(",")}
+        recommended_servers = [s for s in candidate_servers if s["name"].lower() in recommended_names]
         
-        # If LLM didn't match any, return top candidates by similarity
-        if not recommended_servers:
-            return candidate_servers[:3]
-        
-        return recommended_servers[:3]  # Limit to 3
-    except Exception as e:
-        # Fallback: return top candidates by similarity score
+        return recommended_servers[:3] if recommended_servers else candidate_servers[:3]
+    except Exception:
         return candidate_servers[:3]
 
 
