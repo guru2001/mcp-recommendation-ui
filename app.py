@@ -323,9 +323,9 @@ async def on_message(message: cl.Message):
             
             recommendation_msg = f"""💡 I think these MCP servers could help with your query:
 
-{server_descriptions}
+            {server_descriptions}
 
-Type `connect <server_name>` to connect one of them (e.g., `connect {server_names[0]}`)."""
+            Type `connect <server_name>` to connect one of them (e.g., `connect {server_names[0]}`)."""
             
             await cl.Message(content=recommendation_msg).send()
             return
