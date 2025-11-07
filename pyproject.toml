@@ -1,0 +1,13 @@
+[project]
+name = "ai-chat-mcp"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "chainlit>=2.8.0",
+    "fastapi>=0.116.1,<0.117",
+    "openai-agents>=0.5.0",
+    "requests>=2.32.5",
+    "uvicorn>=0.35.0",
+]
