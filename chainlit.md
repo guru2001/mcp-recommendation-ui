@@ -1,14 +1,47 @@
-# Welcome to Chainlit! 🚀🤖
+# MCP Server Chat Application 🚀
 
-Hi there, Developer! 👋 We're excited to have you on board. Chainlit is a powerful tool designed to help you prototype, debug and share applications built on top of LLMs.
+Welcome! This chat application can discover, recommend, and integrate MCP (Model Context Protocol) servers to help you with various tasks.
 
-## Useful Links 🔗
+## How to Use
 
-- **Documentation:** Get started with our comprehensive [Chainlit Documentation](https://docs.chainlit.io) 📚
-- **Discord Community:** Join our friendly [Chainlit Discord](https://discord.gg/k73SQ3FyUh) to ask questions, share your projects, and connect with other developers! 💬
+### 1. **Ask a Question**
+Simply describe what you need help with. The AI will analyze your query and recommend relevant MCP servers that could assist you.
 
-We can't wait to see what you create with Chainlit! Happy coding! 💻😊
+### 2. **Connect MCP Servers**
+When servers are recommended, connect them using:
+```
+connect <server_name>
+```
 
-## Welcome screen
+For example: `connect time` or `connect filesystem`
 
-To modify the welcome screen, edit the `chainlit.md` file at the root of your project. If you do not want a welcome screen, just leave this file empty.
+### 3. **Use Connected Tools**
+Once connected, the MCP server's tools become available to the AI agent, allowing it to help you with more advanced tasks!
+
+## Available Commands
+
+- `connect <server_name>` - Connect an MCP server
+- `list servers` or `servers` - Show connected servers
+- `list available` or `show servers` - Show all available servers
+
+## Example Workflows
+
+**Time queries:**
+- Ask: "What time is it in Tokyo?"
+- System recommends: `time` server
+- Connect: `connect time`
+- Ask again: "What time is it in Tokyo?" (now uses the time server)
+
+**File operations:**
+- Ask: "List files in the current directory"
+- System recommends: `filesystem` server
+- Connect: `connect filesystem`
+- Ask: "Read the README file"
+
+**Web searches:**
+- Ask: "Search for latest AI news"
+- System recommends: `brave-search` server
+- Connect: `connect brave-search`
+- Ask: "What are the latest developments in AI?"
+
+Start by asking a question, and I'll recommend the best MCP servers to help you! 💬

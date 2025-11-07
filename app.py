@@ -3,10 +3,8 @@ import chainlit as cl
 from agents import Agent, Runner
 from agents.mcp import MCPServerStreamableHttp, MCPServerStdio
 import asyncio
-import shlex
-import httpx
-import json
 from datetime import datetime, timedelta
+from local_servers import get_local_mcp_servers
 
 # --- In-memory MCP registry per Chainlit user session ---
 mcp_registry = {}
@@ -16,135 +14,12 @@ _mcp_servers_cache = None
 _cache_timestamp = None
 _cache_ttl = timedelta(hours=24)  # Cache for 24 hours
 
-# --- Local curated list of popular MCP servers (fallback) ---
-def get_local_mcp_servers():
-    """Returns a curated list of popular MCP servers that can be run locally."""
-    return [
-        {
-            "name": "fetch",
-            "description": "Fetch webpages and return Markdown, HTML, or plain text.",
-            "type": "stdio",
-            "command": "uvx mcp-server-fetch"
-        },
-        {
-            "name": "sqlite",
-            "description": "Query and manage SQLite databases.",
-            "type": "stdio",
-            "command": "uvx mcp-server-sqlite --db-path ./db.sqlite"
-        },
-        {
-            "name": "time",
-            "description": "Get current time and convert time zones.",
-            "type": "stdio",
-            "command": "uvx mcp-server-time"
-        },
-        {
-            "name": "filesystem",
-            "description": "Browse and edit local files (limited to project directory).",
-            "type": "stdio",
-            "command": "mcp-filesystem-server ."
-        },
-        {
-            "name": "github",
-            "description": "Interact with GitHub repositories, issues, and pull requests.",
-            "type": "stdio",
-            "command": "uvx mcp-server-github"
-        },
-        {
-            "name": "brave-search",
-            "description": "Search the web using Brave Search API.",
-            "type": "stdio",
-            "command": "uvx mcp-server-brave-search"
-        },
-        {
-            "name": "postgres",
-            "description": "Query and manage PostgreSQL databases.",
-            "type": "stdio",
-            "command": "uvx mcp-server-postgres"
-        },
-        {
-            "name": "slack",
-            "description": "Interact with Slack workspaces, channels, and messages.",
-            "type": "stdio",
-            "command": "uvx mcp-server-slack"
-        }
-    ]
-
-
-async def fetch_mcp_servers_from_web() -> list[dict]:
-    """Attempts to fetch MCP servers from various online sources."""
-    servers = []
-    
-    # Try fetching from various sources
-    sources = [
-        # You can add API endpoints here if they become available
-        # {"url": "https://api.mcplist.ai/servers", "parser": parse_mcplist_response},
-        # {"url": "https://api.openmcpdirectory.com/servers", "parser": parse_openmcp_response},
-    ]
-    
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        for source in sources:
-            try:
-                response = await client.get(source["url"])
-                if response.status_code == 200:
-                    parsed = source["parser"](response.json())
-                    servers.extend(parsed)
-            except Exception as e:
-                # Silently fail and try next source
-                continue
-    
-    return servers
-
-
-async def discover_mcp_servers_from_npm() -> list[dict]:
-    """Attempts to discover MCP servers from npm registry."""
-    servers = []
-    
-    # Common npm package pattern for MCP servers
-    npm_packages = [
-        "mcp-server-fetch",
-        "mcp-server-sqlite",
-        "mcp-server-time",
-        "mcp-server-github",
-        "mcp-server-brave-search",
-        "mcp-server-postgres",
-        "mcp-server-slack",
-        "mcp-server-filesystem",
-    ]
-    
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        for package in npm_packages:
-            try:
-                # Try to get package info from npm registry
-                url = f"https://registry.npmjs.org/{package}"
-                response = await client.get(url)
-                if response.status_code == 200:
-                    data = response.json()
-                    latest = data.get("dist-tags", {}).get("latest")
-                    if latest:
-                        version_data = data.get("versions", {}).get(latest, {})
-                        description = version_data.get("description", "")
-                        
-                        servers.append({
-                            "name": package.replace("mcp-server-", ""),
-                            "description": description or f"MCP server: {package}",
-                            "type": "stdio",
-                            "command": f"uvx {package}"
-                        })
-            except Exception:
-                continue
-    
-    return servers
-
-
-async def get_mcp_servers(use_cache: bool = True, include_web: bool = False, include_npm: bool = True) -> list[dict]:
+async def get_mcp_servers(use_cache: bool = True) -> list[dict]:
     """
     Get a comprehensive list of MCP servers.
     
     Args:
         use_cache: Whether to use cached results
-        include_web: Whether to attempt fetching from web sources (slower)
-        include_npm: Whether to attempt discovering from npm registry (slower)
     
     Returns:
         List of MCP server dictionaries
@@ -159,26 +34,6 @@ async def get_mcp_servers(use_cache: bool = True, include_web: bool = False, inc
     # Start with local curated list
     servers = get_local_mcp_servers()
     
-    # Optionally fetch from web sources
-    if include_web:
-        try:
-            web_servers = await fetch_mcp_servers_from_web()
-            servers.extend(web_servers)
-        except Exception:
-            pass
-    
-    # Try to discover from npm (only if requested)
-    if include_npm:
-        try:
-            npm_servers = await discover_mcp_servers_from_npm()
-            # Merge with existing, avoiding duplicates
-            existing_names = {s["name"].lower() for s in servers}
-            for server in npm_servers:
-                if server["name"].lower() not in existing_names:
-                    servers.append(server)
-        except Exception:
-            pass
-    
     # Update cache
     _mcp_servers_cache = servers
     _cache_timestamp = datetime.now()
@@ -186,37 +41,70 @@ async def get_mcp_servers(use_cache: bool = True, include_web: bool = False, inc
     return servers
 
 
-# --- Backward compatibility ---
-def get_mcp_servers_sync() -> list[dict]:
-    """Synchronous version that returns cached or local servers."""
-    if _mcp_servers_cache:
-        return _mcp_servers_cache
-    return get_local_mcp_servers()
-
-
 # --- Intelligent recommender using agent ---
 async def recommend_servers_intelligent(user_query: str) -> list[dict]:
-    """Use an agent to intelligently recommend MCP servers based on user query."""
-    # Skip npm discovery for recommendations - use local list + cache only
-    servers = await get_mcp_servers(use_cache=True, include_web=False, include_npm=False)
+    """Use an agent to intelligently recommend MCP servers based on user query.
     
-    # Create a prompt for the agent to analyze the query
+    Optimized for large server lists by:
+    1. Using semantic search to narrow down to top candidates first
+    2. Only sending a small subset to the LLM for final ranking
+    """
+    # Step 1: Use semantic search to get top candidates (much faster than sending all to LLM)
+    candidate_servers = []
+    try:
+        from vector_store import search_servers
+        # Get top 20-30 most relevant servers via semantic search
+        candidate_servers = await search_servers(user_query, n_results=25)
+    except Exception:
+        # Vector search not available, fall back to getting all servers
+        pass
+    
+    # Step 2: If semantic search didn't return enough results, get all servers and filter
+    if len(candidate_servers) < 5:
+        all_servers = await get_mcp_servers(use_cache=True)
+        # Fallback: use keyword matching to get candidates
+        query_lower = user_query.lower()
+        query_words = query_lower.split()
+        
+        # Score servers by keyword matches
+        scored_servers = []
+        for server in all_servers:
+            name_lower = server.get("name", "").lower()
+            desc_lower = server.get("description", "").lower()
+            score = 0
+            for word in query_words:
+                if word in name_lower:
+                    score += 3  # Name matches are more important
+                if word in desc_lower:
+                    score += 1
+            if score > 0:
+                scored_servers.append((score, server))
+        
+        # Sort by score and take top candidates
+        scored_servers.sort(reverse=True, key=lambda x: x[0])
+        candidate_servers = [s[1] for s in scored_servers[:25]]
+    
+    # If we still don't have candidates, return empty
+    if not candidate_servers:
+        return []
+    
+    # Step 3: Send only the top candidates to LLM for final ranking (much more efficient)
     server_list = "\n".join([
         f"- {s['name']}: {s['description']}" 
-        for s in servers
+        for s in candidate_servers
     ])
     
-    prompt = f"""Analyze the following user query and recommend the most relevant MCP servers that could help.
+    prompt = f"""Analyze the following user query and recommend the most relevant MCP servers from the candidates below.
 
-Available MCP servers:
-{server_list}
+    Candidate MCP servers (pre-filtered for relevance):
+    {server_list}
 
-User query: "{user_query}"
+    User query: "{user_query}"
 
-Based on the user's query, which MCP servers would be most helpful? 
-Return ONLY a comma-separated list of server names (e.g., "fetch, filesystem").
-If no servers are relevant, return "none".
-Do not include explanations, just the server names."""
+    Based on the user's query, which MCP servers would be most helpful? 
+    Return ONLY a comma-separated list of server names (e.g., "fetch, filesystem").
+    If no servers are relevant, return "none".
+    Do not include explanations, just the server names."""
     
     # Use a lightweight agent for recommendations
     recommender_agent = Agent[Any](
@@ -230,35 +118,45 @@ Do not include explanations, just the server names."""
         
         # Parse the recommendation
         if "none" in recommendation_text.lower() or not recommendation_text.strip():
-            return []
+            # Return top candidates by similarity if LLM says none
+            return candidate_servers[:3]
         
         # Extract server names
         recommended_names = [name.strip().lower() for name in recommendation_text.split(",")]
         recommended_servers = [
-            s for s in servers 
+            s for s in candidate_servers 
             if s["name"].lower() in recommended_names
         ]
         
+        # If LLM didn't match any, return top candidates by similarity
+        if not recommended_servers:
+            return candidate_servers[:3]
+        
         return recommended_servers[:3]  # Limit to 3
     except Exception as e:
-        # Fallback to simple keyword matching if agent fails
-        query_lower = user_query.lower()
-        return [s for s in servers if query_lower in s["description"].lower() or query_lower in s["name"].lower()][:3]
+        # Fallback: return top candidates by similarity score
+        return candidate_servers[:3]
 
 
 # --- Connect to MCP server ---
 async def connect_mcp_server(session_id: str, server_name: str):
     # Skip npm discovery when connecting - use local list + cache only
-    servers = await get_mcp_servers(use_cache=True, include_web=False, include_npm=False)
+    servers = await get_mcp_servers(use_cache=True)
     target = next((s for s in servers if s["name"] == server_name), None)
     if not target:
         return f"❌ Server '{server_name}' not found."
+
+    # Check if already connected
+    existing_servers = mcp_registry.get(session_id, [])
+    if any(s.name == server_name for s in existing_servers):
+        return f"ℹ️ Server '{server_name}' is already connected."
 
     try:
         if target["type"] == "http":
             # (HTTP servers still use StreamableHttp)
             server = MCPServerStreamableHttp(name=target["name"], url=target["url"])
-            await server.connect()
+            # Increase connect timeout to handle cold starts
+            await asyncio.wait_for(server.connect(), timeout=30)
             mcp_registry.setdefault(session_id, []).append(server)
 
         else:
@@ -270,14 +168,27 @@ async def connect_mcp_server(session_id: str, server_name: str):
                     "command": cmd_parts[0],
                     "args": cmd_parts[1:]
                 },
+                cache_tools_list=True
             )
-            await server.connect()
+            server.cache_tools_list = True
+            # Increase connect timeout to handle first-time npx downloads
+            await asyncio.wait_for(server.connect(), timeout=30)
             mcp_registry.setdefault(session_id, []).append(server)
 
         # For simplicity, just list tools to verify the connection
         tools = await server.list_tools()
         tool_names = [t.name for t in tools]
-        return f"✅ Connected to `{server_name}` MCP.\nTools available: {', '.join(tool_names)}"
+        
+        # Invalidate agent so it gets recreated with new servers
+        cl.user_session.set("agent", None)
+        
+        # Format success message nicely
+        tools_text = f"{len(tool_names)} tool{'s' if len(tool_names) != 1 else ''}"
+        tool_list = ", ".join(tool_names[:10])  # Show first 10 tools
+        if len(tool_names) > 10:
+            tool_list += f", and {len(tool_names) - 10} more"
+        
+        return f"✅ **Successfully connected to `{server_name}` MCP server!**\n\n📦 **{tools_text} available:**\n{tool_list}"
 
     except Exception as e:
         return f"⚠️ Failed to connect to `{server_name}` MCP: {e}"
@@ -292,42 +203,106 @@ async def on_message(message: cl.Message):
     if session_id not in mcp_registry:
         mcp_registry[session_id] = []
 
-    # Connect
+    # Connect command
     if user_text.startswith("connect "):
         server_name = user_text.split(" ", 1)[1].strip()
-        msg = await connect_mcp_server(session_id, server_name)
-        await cl.Message(content=msg).send()
+        result_msg = await connect_mcp_server(session_id, server_name)
+        await cl.Message(content=result_msg).send()
+        return
+
+    # List connected servers
+    if user_text in ["list servers", "list connected", "servers", "connected"]:
+        connected = mcp_registry.get(session_id, [])
+        if not connected:
+            await cl.Message(
+                content="ℹ️ **No MCP servers connected.**\n\nAsk me something and I'll recommend some servers that could help!"
+            ).send()
+        else:
+            server_list_parts = ["📋 **Connected MCP Servers:**\n"]
+            for i, s in enumerate(connected, 1):
+                try:
+                    tools = await s.list_tools()
+                    tool_count = len(tools)
+                    tool_text = f"{tool_count} tool{'s' if tool_count != 1 else ''}"
+                except Exception:
+                    tool_text = "tools (unavailable)"
+                server_list_parts.append(f"{i}. **{s.name}** — {tool_text}")
+            await cl.Message(content="\n".join(server_list_parts)).send()
         return
 
     # Normal chat - with intelligent MCP server recommendations
+    # Always get/create agent with current server list
+    current_servers = mcp_registry.get(session_id, [])
     agent = cl.user_session.get("agent")
+    
+    # Recreate agent if servers changed or doesn't exist
+    # Simple check: if agent doesn't exist or server count changed, recreate
     if not agent:
         agent = Agent[Any](
             name="mcp_chat_agent",
             model="gpt-4o-mini",
-            mcp_servers=mcp_registry.get(session_id, [])
+            mcp_servers=current_servers
         )
         cl.user_session.set("agent", agent)
+    else:
+        # Update agent's server list if it changed
+        agent.mcp_servers = current_servers
 
-    # Check if we should recommend MCP servers based on the query
-    # Only recommend if user doesn't already have servers connected
-    if not mcp_registry.get(session_id):
-        recommended_servers = await recommend_servers_intelligent(message.content)
+    # Recommend MCP servers based on query intent (regardless of connected servers)
+    # Track recommended servers per session to avoid repeating the same recommendations
+    recommended_servers_history = cl.user_session.get("recommended_servers", set())
+    
+    # Get recommendations based on query intent
+    recommended_servers = await recommend_servers_intelligent(message.content)
+    
+    if recommended_servers:
+        # Filter out servers we've already recommended in this session
+        # Also filter out servers that are already connected
+        connected_server_names = {s.name for s in current_servers}
+        new_recommendations = [
+            s for s in recommended_servers 
+            if s["name"] not in recommended_servers_history 
+            and s["name"] not in connected_server_names
+        ]
         
-        if recommended_servers:
-            server_names = [s["name"] for s in recommended_servers]
-            server_descriptions = "\n".join([
-                f"• **{s['name']}**: {s['description']}" 
-                for s in recommended_servers
-            ])
+        # If we have new recommendations, show them
+        if new_recommendations:
+            server_names = [s["name"] for s in new_recommendations]
             
-            recommendation_msg = f"""💡 I think these MCP servers could help with your query:
-
-            {server_descriptions}
-
-            Type `connect <server_name>` to connect one of them (e.g., `connect {server_names[0]}`)."""
+            # Track these recommendations so we don't show them again
+            for server_name in server_names:
+                recommended_servers_history.add(server_name)
+            cl.user_session.set("recommended_servers", recommended_servers_history)
             
-            await cl.Message(content=recommendation_msg).send()
+            # Create a nicely formatted recommendation message
+            recommendation_parts = [
+                "💡 **I think these MCP servers could help with your query:**\n"
+            ]
+            
+            for i, server in enumerate(new_recommendations, 1):
+                recommendation_parts.append(
+                    f"{i}. **{server['name']}**\n   {server['description']}"
+                )
+            
+            # Show how to connect any of the recommended servers
+            if len(server_names) == 1:
+                recommendation_parts.append(
+                    f"\n💬 To connect this server, type: `connect {server_names[0]}`\n"
+                )
+            else:
+                # Show examples for multiple servers
+                examples = ", ".join([f"`connect {name}`" for name in server_names[:3]])
+                if len(server_names) > 3:
+                    examples += f", or `connect {server_names[3]}`"
+                recommendation_parts.append(
+                    f"\n💬 To connect a server, type: {examples}\n"
+                )
+            
+            recommendation_parts.append(
+                "ℹ️ I can still help with your query, but connecting a server will give me more capabilities!"
+            )
+            
+            await cl.Message(content="\n".join(recommendation_parts)).send()
             return
 
     msg = cl.Message(content="⏳ Thinking...")
@@ -343,7 +318,7 @@ async def on_message(message: cl.Message):
     result = await Runner.run(agent, message.content)
 
     # Extract final text (depending on SDK version)
-    reply = getattr(result, "final_output", None) or getattr(result, "output_text", str(result))
+    reply = getattr(result, "final_output", str(result))
 
     # --- Stream tokens manually to simulate live typing ---
     for token in reply.split():
