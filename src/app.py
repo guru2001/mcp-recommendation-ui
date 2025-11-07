@@ -1,6 +1,7 @@
 from typing import Any
 import chainlit as cl
 from agents import Agent, Runner
+from vector_store import search_servers
 from agents.mcp import MCPServerStreamableHttp, MCPServerStdio
 import asyncio
 from datetime import datetime, timedelta
@@ -52,7 +53,6 @@ async def recommend_servers_intelligent(user_query: str) -> list[dict]:
     # Step 1: Use semantic search to get top candidates (much faster than sending all to LLM)
     candidate_servers = []
     try:
-        from vector_store import search_servers
         # Get top 20-30 most relevant servers via semantic search
         candidate_servers = await search_servers(user_query, n_results=25)
     except Exception:

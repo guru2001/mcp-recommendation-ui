@@ -38,7 +38,7 @@ def get_local_mcp_servers():
             "name": "brave-search",
             "description": "Search the web using Brave Search API.",
             "type": "stdio",
-            "command": "npx --yes @modelcontextprotocol/server-brave-search"
+            "command": "uvx install mcp-server-brave-search"
         },
         {
             "name": "slack",
@@ -69,6 +69,12 @@ def get_local_mcp_servers():
             "description": "MCP server: DollhouseMCPofficial",
             "type": "stdio",
             "command": "npx install @dollhousemcp/mcp-server"
+        },
+        {
+            "name": "postgresql mcp",
+            "description": "MCP server: PostgreSQL MCP",
+            "type": "stdio",
+            "command": "npx install mcp-server-postgresql"
         }
     ]
 
