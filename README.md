@@ -2,6 +2,10 @@
 
 Welcome! This chat application can discover, recommend, and integrate MCP (Model Context Protocol) servers to help you with various tasks.
 
+## 📹 Demo Video
+
+Watch a demo of the application in action: [Loom Video](https://www.loom.com/share/2a77a7ff9ab64fba8e9c3dfe1cb8f968)
+
 ## How to Use
 
 ### 1. **Ask a Question**
