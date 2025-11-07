@@ -137,13 +137,14 @@ async def discover_mcp_servers_from_npm() -> list[dict]:
     return servers
 
 
-async def get_mcp_servers(use_cache: bool = True, include_web: bool = False) -> list[dict]:
+async def get_mcp_servers(use_cache: bool = True, include_web: bool = False, include_npm: bool = True) -> list[dict]:
     """
     Get a comprehensive list of MCP servers.
     
     Args:
         use_cache: Whether to use cached results
         include_web: Whether to attempt fetching from web sources (slower)
+        include_npm: Whether to attempt discovering from npm registry (slower)
     
     Returns:
         List of MCP server dictionaries
@@ -166,16 +167,17 @@ async def get_mcp_servers(use_cache: bool = True, include_web: bool = False) -> 
         except Exception:
             pass
     
-    # Try to discover from npm
-    try:
-        npm_servers = await discover_mcp_servers_from_npm()
-        # Merge with existing, avoiding duplicates
-        existing_names = {s["name"].lower() for s in servers}
-        for server in npm_servers:
-            if server["name"].lower() not in existing_names:
-                servers.append(server)
-    except Exception:
-        pass
+    # Try to discover from npm (only if requested)
+    if include_npm:
+        try:
+            npm_servers = await discover_mcp_servers_from_npm()
+            # Merge with existing, avoiding duplicates
+            existing_names = {s["name"].lower() for s in servers}
+            for server in npm_servers:
+                if server["name"].lower() not in existing_names:
+                    servers.append(server)
+        except Exception:
+            pass
     
     # Update cache
     _mcp_servers_cache = servers
@@ -195,7 +197,8 @@ def get_mcp_servers_sync() -> list[dict]:
 # --- Intelligent recommender using agent ---
 async def recommend_servers_intelligent(user_query: str) -> list[dict]:
     """Use an agent to intelligently recommend MCP servers based on user query."""
-    servers = await get_mcp_servers(use_cache=True, include_web=False)
+    # Skip npm discovery for recommendations - use local list + cache only
+    servers = await get_mcp_servers(use_cache=True, include_web=False, include_npm=False)
     
     # Create a prompt for the agent to analyze the query
     server_list = "\n".join([
@@ -245,7 +248,8 @@ Do not include explanations, just the server names."""
 
 # --- Connect to MCP server ---
 async def connect_mcp_server(session_id: str, server_name: str):
-    servers = await get_mcp_servers(use_cache=True, include_web=False)
+    # Skip npm discovery when connecting - use local list + cache only
+    servers = await get_mcp_servers(use_cache=True, include_web=False, include_npm=False)
     target = next((s for s in servers if s["name"] == server_name), None)
     if not target:
         return f"❌ Server '{server_name}' not found."
@@ -324,6 +328,7 @@ async def on_message(message: cl.Message):
 Type `connect <server_name>` to connect one of them (e.g., `connect {server_names[0]}`)."""
             
             await cl.Message(content=recommendation_msg).send()
+            return
 
     msg = cl.Message(content="⏳ Thinking...")
     await msg.send()
